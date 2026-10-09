@@ -37,9 +37,9 @@ irori is a thin, local shell. It starts each agent's own command-line tool, show
 
 - **Roundtable threads.** Mention `@claude`, `@codex`, `@grok`, or `@muse` to choose who answers, or `@all` for everyone in turn. Agents see each other's replies.
 - **Your models and effort.** Pick each agent's model and reasoning effort, discovered from its own CLI. Every reply shows the model that wrote it.
-- **Live progress.** See when an agent is thinking or running a command, and stop a reply at any time (⌘.).
+- **Live progress.** See when an agent is thinking or running a command, and stop a reply at any time (⌘.); stopping puts queued messages back into their threads' composers.
 - **Queue while they talk.** Send while agents are still working and your message waits at the bottom of its thread, one per thread, until the turn ends. Cancel it or send it right away from the message itself.
-- **Interrupt with ⌘↩.** Cut the reply in progress short and send now; your message's @mention decides who answers next.
+- **Interrupt with ⌘↩.** Cut the reply in progress short and send now; your message's @mention decides who answers next. With a message already queued in the thread, what you typed goes out together with it.
 - **Know when it's done.** Start a long `@all` turn and switch away: a notification and a dock badge tell you when the agents have finished, and the sidebar marks threads you haven't read.
 - **Voice input.** Click the mic or press ⇧⌘D and talk; words appear as you speak. Speech is transcribed on your Mac by the small Whistle model and never leaves it.
 - **Find anything.** Search every thread from the sidebar, or find text in the open thread with ⌘F.
@@ -104,7 +104,7 @@ Then ask in a thread, for example "@all check Takibi for what we decided about o
 | Grok | Its sandbox allows writes to the thread's folder | Read-only sandbox |
 | Muse | Writes to the thread's folder | No writes and no shell (so no `takibi`) |
 
-Claude isn't sandboxed: the thread folder is its working directory, and anything it does beyond that goes through these approvals. Reads never ask, including read-only commands such as `ls`, `cat`, and `git status`. Web search and web fetch are allowed in every thread until you remove them in Settings → Permissions. When Claude or Codex wants to do anything else (run a command, use a tool), it asks in the thread with **Allow Once**, **Allow in This Thread**, **Always Allow**, **Allow Everything in This Thread**, or **Deny**. **Allow Everything in This Thread** lets every later request through for every agent in that thread, and the thread shows a shield in the sidebar. Always-allowed tools and commands are listed in Settings → Permissions. **Reset Permissions for This Thread** in the sidebar menu clears that choice and the thread's other permissions. Grok and Muse still run inside their sandboxes without asking. Stop denies anything still waiting.
+Claude isn't sandboxed: the thread folder is its working directory, and anything it does beyond that goes through these approvals. Reads never ask, including read-only commands such as `ls`, `cat`, and `git status`. Web search and web fetch are allowed in every thread until you remove them in Settings → Permissions. When Claude or Codex wants to do anything else (run a command, use a tool), it asks in the thread with **Allow Once**, **Allow in This Thread**, **Always Allow**, **Allow Everything in This Thread**, or **Deny**. **Allow Everything in This Thread** lets every later request through for every agent in that thread, and the thread shows a shield in the sidebar and says so in the toolbar, with **Ask Again in This Thread** to turn it off. Always-allowed tools and commands are listed in Settings → Permissions. **Reset Permissions for This Thread** in the sidebar menu clears that choice and the thread's other permissions. Grok and Muse still run inside their sandboxes without asking. Stop denies anything still waiting.
 
 ## Build from source
 

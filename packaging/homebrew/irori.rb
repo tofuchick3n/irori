@@ -6,7 +6,7 @@ cask "irori" do
 
   url "https://github.com/tofuchick3n/irori/releases/download/v#{version}/irori-#{version}.dmg"
   name "irori"
-  desc "Brainstorm with Claude Code, Codex, Grok, and Muse in one thread, alongside Takibi"
+  desc "Roundtable of AI agents in one thread, with optional Takibi Base"
   homepage "https://github.com/tofuchick3n/irori"
 
   depends_on macos: ">= :tahoe"
