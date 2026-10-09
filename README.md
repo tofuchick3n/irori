@@ -10,7 +10,7 @@
 
 [![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black?logo=apple)](#requirements)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://www.swift.org)
-[![GPL-3.0 license](https://img.shields.io/github/license/tofuchick3n/irori)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/tofuchick3n/irori)](https://github.com/tofuchick3n/irori/releases/latest)
 [![CI](https://github.com/tofuchick3n/irori/actions/workflows/ci.yml/badge.svg)](https://github.com/tofuchick3n/irori/actions/workflows/ci.yml)
 

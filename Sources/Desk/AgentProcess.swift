@@ -393,7 +393,12 @@ private func spawnAgent(
     Darwin.close(stdout.write)
     Darwin.close(stderr.write)
 
-    let pgid = getpgid(pid)
+    // Spawned with setpgroup(0), the group id is the pid. A child that already exited has no
+    // group to look up (ESRCH), which is not the failure this check is for.
+    var pgid = getpgid(pid)
+    if pgid == -1, errno == ESRCH {
+        pgid = pid
+    }
     let ownGroup = getpgrp()
     guard pgid > 1, pgid != ownGroup else {
         Darwin.kill(pid, SIGKILL)
