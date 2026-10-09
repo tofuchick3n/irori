@@ -16,23 +16,38 @@ extension DeskModel {
     }
 
     func send() {
-        guard !isRunning, let threadID = selection, let threadIndex = index(of: threadID) else { return }
+        guard let threadID = selection, index(of: threadID) != nil else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
+        let files = attachments
+        if isRunning {
+            guard queuedMessage(in: threadID) == nil else { return }
+            queue.append(QueuedMessage(threadID: threadID, text: text, attachments: files))
+        }
+        draft = ""
+        attachments = []
+        if !isRunning {
+            deliver(text, attachments: files, to: threadID)
+        }
+    }
 
+    /// The path every message takes to a turn, whether sent now or after waiting in the queue.
+    /// A queued one doesn't `reveal` its thread, so it never moves the person away from where they are.
+    func deliver(_ text: String, attachments files: [URL], to threadID: Thread.ID, reveal: Bool = true) {
+        guard let threadIndex = index(of: threadID) else { return }
         // Replying to an archived thread brings it back.
         if threads[threadIndex].archivedAt != nil {
             threads[threadIndex].archivedAt = nil
-            showsArchived = false
-            selection = threadID
+            if reveal {
+                showsArchived = false
+                selection = threadID
+            }
         }
         let earlier = userTexts(in: threads[threadIndex])
         let plan = delivery(for: text, earlierUserTexts: earlier)
-        draft = ""
         var message = Message(author: .user, body: text)
-        let copied = Attachments.copy(attachments, into: workspaceURL(for: threadID))
+        let copied = Attachments.copy(files, into: workspaceURL(for: threadID))
         message.attachments = copied.paths
-        attachments = []
         let isFirstMessage = !threads[threadIndex].messages.contains { $0.author == .user }
         threads[threadIndex].messages.append(message)
         if !copied.failed.isEmpty {
@@ -65,10 +80,13 @@ extension DeskModel {
             activity = nil
             denyPendingApprovals()
             finishTurn(in: threadID, stopped: stopped)
+            // Stop already cleared the queue, so anything here was sent after it and should go.
+            sendNextQueued()
         }
     }
 
     func stop() {
+        clearQueue()
         runTask?.cancel()
         denyPendingApprovals()
     }

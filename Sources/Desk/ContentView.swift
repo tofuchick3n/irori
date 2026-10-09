@@ -36,7 +36,7 @@ struct ContentView: View {
             if let thread = model.selectedThread {
                 let matches = model.findMatches
                 Group {
-                    if thread.messages.isEmpty {
+                    if thread.messages.isEmpty, model.queuedMessage(in: thread.id) == nil {
                         EmptyThreadView(model: model)
                     } else {
                         TranscriptView(
@@ -48,6 +48,9 @@ struct ContentView: View {
                             userPhoto: model.profile.photo,
                             saveToTakibi: { savingToTakibi = $0 },
                             workspace: model.workspaceURL(for: thread.id),
+                            queued: model.queuedMessage(in: thread.id),
+                            sendQueuedNow: { model.sendQueuedNow(in: thread.id) },
+                            cancelQueued: { model.cancelQueued(in: thread.id) },
                             allowedCommands: model.allowedCommands,
                             allowCommand: model.allowCommand,
                             performFix: { message in
@@ -102,9 +105,15 @@ struct ContentView: View {
                 .toolbar {
                     if thread.allowsEverything {
                         ToolbarItem {
-                            Image(systemName: "checkmark.shield")
-                                .help("Allowing everything in this thread")
-                                .accessibilityLabel("Allowing everything in this thread")
+                            Menu {
+                                Button("Ask Again in This Thread") {
+                                    model.stopAllowingEverything(thread.id)
+                                }
+                            } label: {
+                                Label("Allowing Everything", systemImage: "exclamationmark.shield")
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .help("Agents in this thread run anything without asking")
                         }
                     }
                     ToolbarItem {

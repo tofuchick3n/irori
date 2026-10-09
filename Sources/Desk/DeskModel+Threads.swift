@@ -26,7 +26,7 @@ extension DeskModel {
         // Reuse an empty thread that is untagged or already in the filtered client, never
         // another client's thread, so a filter can't pull it into a second client.
         let reusable = orderedThreads.first { thread in
-            thread.archivedAt == nil && thread.messages.isEmpty && (thread.tags.isEmpty || filteredThreads.contains { $0.id == thread.id } && tagFilter != nil)
+            thread.archivedAt == nil && thread.messages.isEmpty && queuedMessage(in: thread.id) == nil && (thread.tags.isEmpty || filteredThreads.contains { $0.id == thread.id } && tagFilter != nil)
         }
         if let empty = reusable {
             selection = empty.id
@@ -75,9 +75,12 @@ extension DeskModel {
         }
         failedDeletes.remove(id)
         storageFailures[id] = nil
+        queue.removeAll { $0.threadID == id }
         let task = runningThreadID == id ? runTask : nil
-        if task != nil {
-            stop()
+        // Ends this thread's turn without Stop's clearing of other threads' queued messages.
+        if let task {
+            task.cancel()
+            denyPendingApprovals()
         }
         threads.removeAll { $0.id == id }
         drafts[id] = nil

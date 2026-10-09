@@ -17,12 +17,28 @@ extension DeskModel {
 
     /// Return while dictating sends once the last words are in.
     func finishDictationAndSend() {
-        guard dictation.isActive else { return send() }
-        // Already finishing for an earlier Return, which sends.
-        guard dictation.state != .finishing else { return }
-        Task {
+        finishDictation(then: send)
+    }
+
+    func finishDictationAndSendNow() {
+        finishDictation(then: sendNow, now: true)
+    }
+
+    /// One send per finish: a second Return waits for the first, and ⌘↩ meanwhile upgrades it to send now.
+    private func finishDictation(then action: @escaping () -> Void, now: Bool = false) {
+        guard dictation.isActive || dictationSend != nil else { return action() }
+        if dictationSend != nil {
+            dictationSendsNow = dictationSendsNow || now
+            return
+        }
+        dictationSendsNow = now
+        let threadID = selection
+        dictationSend = Task {
             await dictation.finish()
-            send()
+            dictationSend = nil
+            // Switched threads meanwhile: the words stay in their own thread's draft, unsent.
+            guard selection == threadID else { return }
+            if dictationSendsNow { sendNow() } else { send() }
         }
     }
 

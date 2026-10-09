@@ -8,7 +8,6 @@ struct ComposerView: View {
         ComposerField(
             text: Binding(get: { model.draft }, set: { model.draft = $0 }),
             threadID: model.selection,
-            isRunning: model.isRunning,
             activeAgents: model.activeAgents,
             placeholder: placeholder,
             focusRequest: model.composerFocusRequest,
@@ -16,6 +15,7 @@ struct ComposerView: View {
             removeAttachment: model.removeAttachment,
             addAttachments: model.addAttachments,
             onSubmit: model.finishDictationAndSend,
+            onSubmitNow: model.finishDictationAndSendNow,
             onEscape: model.dismissForEscape
         ) {
             HStack(spacing: 8) {
@@ -46,9 +46,11 @@ struct ComposerView: View {
                     }
                 }
                 if model.isRunning, !model.selectedThreadIsRunning, let title = model.runningThreadTitle {
-                    Text("Waiting for “\(title)” to finish")
+                    Text(model.queuedMessage(in: model.selection) != nil ? "“\(title)” is running; your queued message sends after" : "“\(title)” is running")
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                if model.isRunning, !model.selectedThreadIsRunning || hasContent {
                     Button("Stop", action: model.stop)
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -66,7 +68,7 @@ struct ComposerView: View {
     }
 
     @ViewBuilder private var sendButton: some View {
-        if model.selectedThreadIsRunning {
+        if model.selectedThreadIsRunning, !hasContent {
             Button("Stop", systemImage: "stop.circle.fill", action: model.stop)
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(Color(nsColor: .textBackgroundColor), Color.primary)
@@ -76,12 +78,25 @@ struct ComposerView: View {
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, canSend ? Color.accentColor : Color.secondary.opacity(0.4))
                 .disabled(!canSend)
-                .help("Send")
+                .help(sendHelp)
         }
     }
 
+    private var hasContent: Bool {
+        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.isEmpty
+    }
+
+    private var hasQueued: Bool {
+        model.queuedMessage(in: model.selection) != nil
+    }
+
     private var canSend: Bool {
-        !model.isRunning && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.attachments.isEmpty)
+        hasContent && !hasQueued
+    }
+
+    private var sendHelp: String {
+        if hasQueued { return "One message is already queued. Cancel it, or press ⌘↩ to send it now." }
+        return model.isRunning ? "Queue to send when the reply finishes" : "Send"
     }
 
     private func chooseFiles() {
@@ -244,7 +259,6 @@ struct AgentSettingsPickers: View {
 private struct ComposerField<Accessory: View>: View {
     @Binding var text: String
     var threadID: Thread.ID?
-    var isRunning: Bool
     var activeAgents: [AgentID]
     var placeholder: String
     var focusRequest: Int
@@ -252,6 +266,8 @@ private struct ComposerField<Accessory: View>: View {
     var removeAttachment: (URL) -> Void
     var addAttachments: ([URL]) -> Void
     var onSubmit: () -> Void
+    /// ⌘↩: send without waiting for the turn in progress.
+    var onSubmitNow: () -> Void = {}
     /// Escape with no mention list showing; returns whether it did anything.
     var onEscape: () -> Bool = { false }
     @ViewBuilder var accessory: Accessory
@@ -369,7 +385,9 @@ private struct ComposerField<Accessory: View>: View {
                             insertHighlighted()
                             return .handled
                         }
-                        if !isRunning {
+                        if press.modifiers.contains(.command) {
+                            onSubmitNow()
+                        } else {
                             onSubmit()
                         }
                         return .handled

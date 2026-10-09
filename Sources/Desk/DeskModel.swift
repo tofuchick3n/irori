@@ -109,6 +109,9 @@ final class DeskModel {
     let notifier: any TurnNotifier
     let isAppActive: @MainActor () -> Bool
     var drafts: [Thread.ID: String] = [:]
+    /// Finishing dictation before a Return or ⌘↩ sends; see `finishDictation`.
+    var dictationSend: Task<Void, Never>?
+    var dictationSendsNow = false
     var draft: String {
         get {
             guard let selection else { return "" }
@@ -140,6 +143,8 @@ final class DeskModel {
     var runTask: Task<Void, Never>?
     var runningThreadID: Thread.ID?
     var runningAgent: AgentID?
+    /// Messages sent during a turn, oldest first, at most one per thread.
+    var queue: [QueuedMessage] = []
     private var loadError: String?
     /// What went wrong for each thread whose save or delete hasn't succeeded yet.
     var storageFailures: [Thread.ID: String] = [:]

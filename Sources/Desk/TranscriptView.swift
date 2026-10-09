@@ -13,6 +13,9 @@ struct TranscriptView: View {
     let userPhoto: NSImage?
     let saveToTakibi: (Message) -> Void
     let workspace: URL
+    var queued: QueuedMessage?
+    var sendQueuedNow: () -> Void = {}
+    var cancelQueued: () -> Void = {}
     let allowedCommands: [String]
     let allowCommand: (String) -> Void
     var performFix: (Message) -> Void = { _ in }
@@ -84,6 +87,10 @@ struct TranscriptView: View {
                         )
                         .equatable()
                         .id(row.message.id)
+                    }
+                    if let queued {
+                        QueuedMessageRow(queued: queued, userName: userName, userPhoto: userPhoto, sendNow: sendQueuedNow, cancel: cancelQueued)
+                            .id(queued.id)
                     }
                     // The bottom margin, inside the stack: anchored to the bottom, the scroll view
                     // keeps the last row in place as widths change, and padding outside it drifted.

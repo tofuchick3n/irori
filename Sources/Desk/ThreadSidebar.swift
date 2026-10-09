@@ -183,7 +183,7 @@ private struct ThreadRow: View {
                 Text(thread.title)
                     .lineLimit(1)
                 if thread.allowsEverything {
-                    Image(systemName: "checkmark.shield")
+                    Image(systemName: "exclamationmark.shield")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .help("Allowing everything in this thread")

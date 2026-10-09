@@ -61,6 +61,12 @@ extension DeskModel {
         alwaysAllowedTools.removeAll { $0 == rule }
     }
 
+    func stopAllowingEverything(_ threadID: Thread.ID) {
+        guard let threadIndex = index(of: threadID), threads[threadIndex].allowsEverything else { return }
+        threads[threadIndex].allowsEverything = false
+        persist(threads[threadIndex])
+    }
+
     func resetThreadPermissions(_ threadID: Thread.ID) {
         guard let threadIndex = index(of: threadID) else { return }
         guard !threads[threadIndex].allowedRules.isEmpty || threads[threadIndex].allowsEverything else { return }
