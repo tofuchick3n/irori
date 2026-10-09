@@ -1,0 +1,85 @@
+#!/bin/bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+# shellcheck source=brand.env
+source "$root/scripts/brand.env"
+
+whistle="$("$root/scripts/fetch-whistle")"
+swift build -c release --disable-sandbox
+
+app="$root/build/$APP_NAME.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
+cp "$root/.build/release/Desk" "$app/Contents/MacOS/$APP_NAME"
+chmod +x "$app/Contents/MacOS/$APP_NAME"
+# Sparkle ships as a framework; SwiftPM only adds @loader_path, so point the app at Contents/Frameworks.
+ditto "$root/.build/release/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/$APP_NAME"
+# Assets/AppIcon.icns is drawn by scripts/make-icon.swift (steps at the top of that file).
+cp "$root/Assets/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+# Voice input's speech model (Whistle).
+cp "$whistle/whistle.cact" "$app/Contents/Resources/whistle.cact"
+cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
+cp "$root/THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
+cp "$root/Vendor/Needle/LICENSE" "$app/Contents/Resources/Needle-LICENSE"
+
+cat > "$app/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>SUFeedURL</key>
+	<string>$FEED_URL</string>
+	<key>SUPublicEDKey</key>
+	<string>$SPARKLE_PUBLIC_KEY</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>CFBundleExecutable</key>
+	<string>$APP_NAME</string>
+	<key>CFBundleIdentifier</key>
+	<string>$BUNDLE_ID</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$APP_NAME</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Deian Isac</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$APP_VERSION</string>
+	<key>CFBundleVersion</key>
+	<string>$BUILD_NUMBER</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Voice input turns what you say into text on this Mac.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>
+EOF
+
+# Ad-hoc by default. Set DESK_SIGN_IDENTITY (e.g. "Developer ID Application: …") to sign for real,
+# with the hardened runtime and a secure timestamp.
+identity="${DESK_SIGN_IDENTITY:--}"
+if [ "$identity" = "-" ]; then
+  sign=(codesign --force --sign -)
+else
+  sign=(codesign --force --sign "$identity" --options runtime --timestamp)
+fi
+# Inside out, in the order Sparkle documents for hardened-runtime apps.
+sparkle="$app/Contents/Frameworks/Sparkle.framework/Versions/B"
+"${sign[@]}" "$sparkle/XPCServices/Installer.xpc"
+"${sign[@]}" --preserve-metadata=entitlements "$sparkle/XPCServices/Downloader.xpc"
+"${sign[@]}" "$sparkle/Autoupdate"
+"${sign[@]}" "$sparkle/Updater.app"
+"${sign[@]}" "$app/Contents/Frameworks/Sparkle.framework"
+# The hardened runtime blocks the microphone without this entitlement.
+"${sign[@]}" --entitlements "$root/scripts/Desk.entitlements" "$app"

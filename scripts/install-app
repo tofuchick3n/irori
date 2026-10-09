@@ -1,0 +1,32 @@
+#!/bin/bash
+# Builds the app, signs it with the first Developer ID Application identity in the keychain,
+# checks the signature, and installs it into /Applications.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=brand.env
+source "$root/scripts/brand.env"
+identity="${DESK_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)}"
+if [ -z "$identity" ]; then
+  echo "No Developer ID Application identity found in the keychain." >&2
+  exit 1
+fi
+
+DESK_SIGN_IDENTITY="$identity" "$root/scripts/make-app"
+built="$root/build/$APP_NAME.app"
+codesign --verify --strict --verbose=2 "$built"
+
+installed="/Applications/$APP_NAME.app"
+# Quitting the app stops any agent mid-reply, so only do it when asked.
+if pgrep -f "$installed/Contents/MacOS/" >/dev/null; then
+  if [ "${QUIT_RUNNING:-0}" != "1" ]; then
+    echo "$APP_NAME is running. Quit it first, or run with QUIT_RUNNING=1 to quit it (this stops any agent mid-reply)." >&2
+    exit 1
+  fi
+  osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  for _ in $(seq 1 50); do pgrep -f "$installed/Contents/MacOS/" >/dev/null || break; sleep 0.1; done
+fi
+rm -rf "$installed"
+ditto "$built" "$installed"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$installed"
+echo "Installed $installed, signed by $identity."

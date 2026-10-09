@@ -1,0 +1,29 @@
+#!/bin/bash
+# Writes a fresh, single-commit copy of the current HEAD for the public repo, leaving out
+# internal notes. Nothing is pushed; add a remote and push when you're ready.
+#   scripts/export-public [destination]   (default: ../irori)
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=brand.env
+source "$root/scripts/brand.env"
+destination="${1:-$root/../irori}"
+author_name="tofuchick3n"
+author_email="247039655+tofuchick3n@users.noreply.github.com"
+excluded=("docs/PLAN.md")
+
+if [ -e "$destination" ]; then
+  echo "$destination already exists; move it aside first." >&2
+  exit 1
+fi
+mkdir -p "$destination"
+git -C "$root" archive HEAD | tar -x -C "$destination"
+for path in "${excluded[@]}"; do
+  rm -f "$destination/$path"
+done
+git -C "$destination" init -q -b main
+git -C "$destination" add -A
+GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
+GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" \
+  git -C "$destination" commit -q -m "$APP_NAME $(sed -n 's/^APP_VERSION="\(.*\)"/\1/p' "$root/scripts/brand.env")"
+echo "Exported to $destination ($(git -C "$destination" ls-files | wc -l | tr -d ' ') files, one commit, no remote)."

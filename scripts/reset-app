@@ -1,0 +1,41 @@
+#!/bin/bash
+# Moves the app's data and settings aside so the next launch looks like a fresh install.
+#   scripts/reset-app                 back up and reset
+#   scripts/reset-app --restore DIR   put a backup back (quits the app first)
+# CLI sign-ins and ~/.takibi/key are left alone; other tools use them too.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=brand.env
+source "$root/scripts/brand.env"
+support="$HOME/Library/Application Support/$SUPPORT_FOLDER"
+
+osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+for _ in $(seq 1 50); do
+  pgrep -f "/$APP_NAME.app/Contents/MacOS/" >/dev/null || break
+  sleep 0.1
+done
+
+if [ "${1:-}" = "--restore" ]; then
+  backup="${2:?Pass the backup folder to restore.}"
+  [ -d "$backup/data" ] || { echo "No data folder in $backup." >&2; exit 1; }
+  if [ -e "$support" ]; then
+    mv "$support" "$support (replaced $(date +%Y%m%d-%H%M%S))"
+  fi
+  mv "$backup/data" "$support"
+  defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+  [ -f "$backup/settings.plist" ] && defaults import "$BUNDLE_ID" "$backup/settings.plist"
+  rmdir "$backup" 2>/dev/null || true
+  echo "Restored $APP_NAME from $backup."
+  exit 0
+fi
+
+backup="$HOME/Library/Application Support/$SUPPORT_FOLDER backups/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup"
+if [ -e "$support" ]; then
+  mv "$support" "$backup/data"
+fi
+defaults export "$BUNDLE_ID" "$backup/settings.plist" >/dev/null 2>&1 || true
+defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+echo "$APP_NAME is reset. Backup: $backup"
+echo "Restore with: scripts/reset-app --restore \"$backup\""

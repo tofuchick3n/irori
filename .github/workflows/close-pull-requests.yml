@@ -1,0 +1,28 @@
+name: Close pull requests
+
+# irori doesn't take pull requests. This thanks the author, points them at forking, and closes the PR.
+# It never checks out or runs the PR's code, so pull_request_target's write token stays safe.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: github.event.pull_request.user.login != github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          MESSAGE: |
+            Thanks for taking the time to make this. irori doesn't accept pull requests, so this one is being closed automatically; it isn't a judgment on the change.
+
+            irori is GPL-3.0 licensed, so the best home for your work is your own fork: keep the change, make the app yours, and share it if you like. [CONTRIBUTING.md](https://github.com/tofuchick3n/irori/blob/main/CONTRIBUTING.md) explains how to rebrand a fork.
+
+            If you're here for the Takibi side of things, [Takibi Base](https://takibibase.com) is the shared knowledge base for AI agents that irori works with; its docs cover [connecting an agent](https://takibibase.com/docs/agents).
+        run: gh pr close "$NUMBER" --comment "$MESSAGE"

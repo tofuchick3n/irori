@@ -1,0 +1,21 @@
+name: CI
+
+# Pull requests are closed without review (see CONTRIBUTING.md), so CI runs only on main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    # Desk targets macOS 26 and needs a Swift 6.2+ toolchain.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the speech engine and model
+        run: scripts/fetch-whistle
+      - name: Build
+        run: swift build --disable-sandbox
+      - name: Test
+        # Live, snapshot, and window tests are opt-in through environment variables and stay off here.
+        run: swift test --disable-sandbox

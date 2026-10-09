@@ -1,0 +1,15 @@
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+.DS_Store
+build/
+.grok/
+.claude/
+.codex/
+.cursor/
+*.dmg
+appcast.xml
+sparkle-private-key*
+*.p8
+*.p12

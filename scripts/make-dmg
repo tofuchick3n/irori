@@ -1,0 +1,44 @@
+#!/bin/bash
+# Builds a Developer ID signed app, wraps it in a signed disk image, and writes the Sparkle feed:
+#   build/release/<Name>-<version>.dmg and build/release/appcast.xml
+# Attach both to the GitHub release tagged v<version>. With NOTARY_PROFILE set (a
+# `xcrun notarytool store-credentials` profile), the image is notarized and stapled first.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=brand.env
+source "$root/scripts/brand.env"
+identity="${DESK_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)}"
+if [ -z "$identity" ]; then
+  echo "No Developer ID Application identity found in the keychain." >&2
+  exit 1
+fi
+
+DESK_SIGN_IDENTITY="$identity" "$root/scripts/make-app"
+
+staging="$root/build/dmg"
+release="$root/build/release"
+image="$release/${APP_NAME// /-}-$APP_VERSION.dmg"
+rm -rf "$staging" "$release"
+mkdir -p "$release"
+mkdir -p "$staging"
+ditto "$root/build/$APP_NAME.app" "$staging/$APP_NAME.app"
+ln -s /Applications "$staging/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$staging" -fs HFS+ -format UDZO "$image" >/dev/null
+codesign --force --sign "$identity" --timestamp "$image"
+rm -rf "$staging"
+
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+  xcrun notarytool submit "$image" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$image"
+  spctl -a -t open --context context:primary-signature -vv "$image"
+else
+  echo "Not notarized. Set NOTARY_PROFILE to a notarytool keychain profile to notarize." >&2
+fi
+
+# Signs the image with the EdDSA key in the login keychain and lists it in appcast.xml.
+"$root/.build/artifacts/sparkle/Sparkle/bin/generate_appcast" \
+  --download-url-prefix "${FEED_URL%/latest/download/appcast.xml}/download/v$APP_VERSION/" \
+  "$release"
+echo "$image"
+echo "$release/appcast.xml"

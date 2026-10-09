@@ -1,0 +1,31 @@
+#!/bin/bash
+# Downloads the Needle engine (libneedle.a) and the Whistle speech-to-text weights (whistle.cact)
+# into .build/whistle at pinned revisions and checks their SHA-256. Files already there and
+# verified are kept. Prints the folder.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+folder="$root/.build/whistle"
+mkdir -p "$folder"
+
+# fetch <file> <url> <sha256>
+fetch() {
+  local file="$folder/$1"
+  verified() { [ -f "$1" ] && [ "$(shasum -a 256 "$1" | cut -d' ' -f1)" = "$2" ]; }
+  verified "$file" "$3" && return
+  curl -fsSL -o "$file.partial" "$2"
+  if ! verified "$file.partial" "$3"; then
+    rm -f "$file.partial"
+    echo "$1 didn't match its pinned SHA-256." >&2
+    exit 1
+  fi
+  mv "$file.partial" "$file"
+}
+
+fetch libneedle.a \
+  "https://huggingface.co/Cactus-Compute/needle3/resolve/2ae11323dc000f5e70c49f7403efa6af12ba9e67/macos-arm64/libneedle.a" \
+  98da47c15e1065b4cdc7ddc55e825be78414d4586832db3becaeded39a373df4
+fetch whistle.cact \
+  "https://huggingface.co/Cactus-Compute/whistle/resolve/b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact" \
+  b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb
+echo "$folder"
