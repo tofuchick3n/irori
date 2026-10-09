@@ -38,6 +38,8 @@ irori is a thin, local shell. It starts each agent's own command-line tool, show
 - **Roundtable threads.** Mention `@claude`, `@codex`, `@grok`, or `@muse` to choose who answers, or `@all` for everyone in turn. Agents see each other's replies.
 - **Your models and effort.** Pick each agent's model and reasoning effort, discovered from its own CLI. Every reply shows the model that wrote it.
 - **Live progress.** See when an agent is thinking or running a command, and stop a reply at any time (⌘.).
+- **Queue while they talk.** Send while agents are still working and your message waits at the bottom of its thread, one per thread, until the turn ends. Cancel it or send it right away from the message itself.
+- **Interrupt with ⌘↩.** Cut the reply in progress short and send now; your message's @mention decides who answers next.
 - **Know when it's done.** Start a long `@all` turn and switch away: a notification and a dock badge tell you when the agents have finished, and the sidebar marks threads you haven't read.
 - **Voice input.** Click the mic or press ⇧⌘D and talk; words appear as you speak. Speech is transcribed on your Mac by the small Whistle model and never leaves it.
 - **Find anything.** Search every thread from the sidebar, or find text in the open thread with ⌘F.
