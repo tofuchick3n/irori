@@ -1,9 +1,16 @@
 #!/bin/bash
 # Copies the current HEAD into the public repo's working copy, leaving out internal notes, and commits
 # it there as one new commit on top of the public history. Nothing is pushed; push when you're ready.
-#   scripts/export-public [destination]   (default: ../irori)
+#   scripts/export-public [-m message] [destination]   (default: ../irori)
+# The commit is named "<app> <version>" unless -m gives another message, e.g. for a docs-only change.
 # A destination that doesn't exist yet becomes a fresh repo with a single commit.
 set -euo pipefail
+
+message=""
+if [ "${1:-}" = "-m" ]; then
+  message="${2:?-m needs a message}"
+  shift 2
+fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=brand.env
@@ -40,5 +47,5 @@ if git -C "$destination" diff --cached --quiet; then
 fi
 GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
 GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" \
-  git -C "$destination" commit -q -m "$APP_NAME $version"
-echo "Committed $APP_NAME $version in $destination ($(git -C "$destination" rev-list --count HEAD) commits)."
+  git -C "$destination" commit -q -m "${message:-$APP_NAME $version}"
+echo "Committed ${message:-$APP_NAME $version} in $destination ($(git -C "$destination" rev-list --count HEAD) commits)."
