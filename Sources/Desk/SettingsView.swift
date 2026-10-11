@@ -477,7 +477,7 @@ struct TakibiSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                if takibi.cliPath != nil, takibi.hasKeyFile, takibi.projectsError == nil, !isReplacingKey {
+                if takibi.cliPath != nil, takibi.hasKey, takibi.projectsError == nil, !isReplacingKey {
                     LabeledContent("API key") {
                         HStack {
                             Text("Saved")
@@ -497,10 +497,25 @@ struct TakibiSettings: View {
                                 .disabled(pastedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
-                    if let keyError {
-                        Text(keyError)
-                            .font(.callout)
-                            .foregroundStyle(.red)
+                }
+                if let error = keyError ?? takibi.keysError {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
+                if takibi.sharedKeyFileExists {
+                    LabeledContent {
+                        Button("Delete") {
+                            do {
+                                try takibi.deleteSharedKeyFile()
+                                keyError = nil
+                            } catch {
+                                keyError = error.localizedDescription
+                            }
+                        }
+                    } label: {
+                        Text("~/.takibi/key")
+                        Text("Any program you run, including AI agents outside \(Brand.name), uses this key without asking. \(Brand.name) doesn't need it.")
                     }
                 }
                 HStack {
@@ -517,7 +532,7 @@ struct TakibiSettings: View {
             } header: {
                 Text("Takibi")
             } footer: {
-                Text("Agents use the takibi command to search your knowledge base and update cards. \(Brand.name) saves a pasted key to ~/.takibi/key, readable only by you, and never sends it anywhere.")
+                Text("Agents use the takibi command to search your knowledge base and update cards. \(Brand.name) keeps your key in the Keychain and writes it to a private file only while an agent replies.")
                     .foregroundStyle(.secondary)
             }
 
@@ -558,7 +573,7 @@ struct TakibiSettings: View {
             } header: {
                 Text("Separate keys (optional)")
             } footer: {
-                Text("Paste a separate Takibi API key for an agent so Takibi records which agent made each change. \(Brand.name) saves each key in its own folder, readable only by you, and hands that agent's takibi the file.")
+                Text("Paste a separate Takibi API key for an agent so Takibi records which agent made each change. \(Brand.name) keeps these in the Keychain too.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -572,13 +587,16 @@ struct TakibiSettings: View {
     }
 
     private func saveKey() {
-        do {
-            try takibi.saveKey(pastedKey)
-            pastedKey = ""
-            keyError = nil
-            isReplacingKey = false
-        } catch {
-            keyError = error.localizedDescription
+        let key = pastedKey
+        Task {
+            do {
+                try await takibi.saveKey(key)
+                pastedKey = ""
+                keyError = nil
+                isReplacingKey = false
+            } catch {
+                keyError = error.localizedDescription
+            }
         }
     }
 
@@ -604,13 +622,11 @@ private struct KeyFileRow: View {
 
     var body: some View {
         LabeledContent {
-            if model.keyFile(for: agent) != nil {
+            if model.takibi.hasOwnKey(agent) {
                 HStack {
                     Text("Own key")
                         .foregroundStyle(.secondary)
-                    Button("Remove") {
-                        model.removeAgentKey(for: agent)
-                    }
+                    Button("Remove", action: remove)
                 }
             } else {
                 VStack(alignment: .trailing, spacing: 4) {
@@ -625,6 +641,11 @@ private struct KeyFileRow: View {
                         Text(error)
                             .font(.callout)
                             .foregroundStyle(.red)
+                    } else if !model.takibi.hasKey, AgentID.allCases.contains(where: model.takibi.hasOwnKey) {
+                        Text("Without its own key or a main key, \(agent.displayName) can't use Takibi.")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.trailing)
                     } else if fallsBackToMainKey {
                         Text("Without its own key, Takibi records \(agent.displayName)'s changes under your main key.")
                             .font(.callout)
@@ -644,16 +665,30 @@ private struct KeyFileRow: View {
 
     /// Once any agent has its own key, the others quietly using the main key are worth flagging.
     private var fallsBackToMainKey: Bool {
-        model.keyFile(for: agent) == nil && AgentID.allCases.contains { model.keyFile(for: $0) != nil }
+        !model.takibi.hasOwnKey(agent) && AgentID.allCases.contains(where: model.takibi.hasOwnKey)
     }
 
     private func save() {
-        do {
-            try model.saveAgentKey(key, for: agent)
-            key = ""
-            error = nil
-        } catch {
-            self.error = error.localizedDescription
+        let pasted = key
+        Task {
+            do {
+                try await model.saveAgentKey(pasted, for: agent)
+                key = ""
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func remove() {
+        Task {
+            do {
+                try await model.removeAgentKey(for: agent)
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

@@ -190,43 +190,67 @@ extension DeskModel {
         binaryOverrides[agent]
     }
 
-    /// Where Desk keeps an agent's own pasted Takibi key.
-    func agentKeyURL(for agent: AgentID) -> URL {
+    /// Saves a pasted API key for one agent in the Keychain. Its runs use it in place of the main key.
+    func saveAgentKey(_ key: String, for agent: AgentID) async throws {
+        try await takibi.saveKey(key, for: agent.rawValue)
+    }
+
+    /// Back to the main key.
+    func removeAgentKey(for agent: AgentID) async throws {
+        try await takibi.removeKey(for: agent.rawValue)
+    }
+
+    /// Earlier versions kept keys in files: each agent's under `takibi-keys`, the main one at
+    /// `~/.takibi/key`. Copies them into the Keychain once, then deletes `~/.takibi/key`, which
+    /// every program on the Mac falls back to, and the agents' files irori wrote.
+    func moveKeyFilesToKeychain() async {
+        guard !defaults.bool(forKey: Self.keysMovedKey) else { return }
+        let stored = Self.loadKeyFiles(from: defaults)
+        var found: [String: String] = [:]
+        var unreadable: Set<AgentID> = []
+        for (agent, path) in stored {
+            let expanded = AgentCommand.expandingTilde(path, home: homeDirectory)
+            if let key = Self.readKey(at: expanded) {
+                found[agent.rawValue] = key
+            } else if FileManager.default.fileExists(atPath: expanded) {
+                unreadable.insert(agent)
+            }
+        }
+        let shared = TakibiPaths.keyFile(home: homeDirectory)
+        let sharedKey = Self.readKey(at: shared)
+        if let sharedKey {
+            found[TakibiService.mainKey] = sharedKey
+        }
+        do {
+            try await takibi.importKeys(found)
+        } catch {
+            return
+        }
+        if sharedKey != nil {
+            try? takibi.deleteSharedKeyFile()
+        }
+        // A file that couldn't be read stays, and so does its setting, for the next launch to try.
+        for (agent, path) in stored where !unreadable.contains(agent) {
+            let file = legacyAgentKeyURL(for: agent)
+            if AgentCommand.expandingTilde(path, home: homeDirectory) == file.path(percentEncoded: false) {
+                try? FileManager.default.removeItem(at: file)
+            }
+            defaults.removeObject(forKey: Self.keyFileKey(agent))
+        }
+        if unreadable.isEmpty {
+            defaults.set(true, forKey: Self.keysMovedKey)
+        }
+    }
+
+    func legacyAgentKeyURL(for agent: AgentID) -> URL {
         supportDirectory
             .appending(path: "takibi-keys", directoryHint: .isDirectory)
             .appending(path: "\(agent.rawValue).key", directoryHint: .notDirectory)
     }
 
-    /// Saves a pasted API key for one agent and points that agent's takibi at it.
-    func saveAgentKey(_ key: String, for agent: AgentID) throws {
-        let file = agentKeyURL(for: agent)
-        try TakibiKey.write(key, to: file)
-        setKeyFile(file.path(percentEncoded: false), for: agent)
-    }
-
-    /// Back to the main key; deletes the file only when Desk wrote it.
-    func removeAgentKey(for agent: AgentID) {
-        let file = agentKeyURL(for: agent)
-        if keyFile(for: agent) == file.path(percentEncoded: false) {
-            try? FileManager.default.removeItem(at: file)
-        }
-        setKeyFile(nil, for: agent)
-    }
-
-    func keyFile(for agent: AgentID) -> String? {
-        keyFiles[agent]
-    }
-
-    func setKeyFile(_ path: String?, for agent: AgentID) {
-        let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let key = Self.keyFileKey(agent)
-        if trimmed.isEmpty {
-            defaults.removeObject(forKey: key)
-            keyFiles[agent] = nil
-        } else {
-            defaults.set(trimmed, forKey: key)
-            keyFiles[agent] = trimmed
-        }
+    private static func readKey(at path: String) -> String? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        return try? TakibiKey.validated(text)
     }
 
     func setBinaryOverride(_ path: String?, for agent: AgentID) {
@@ -292,13 +316,6 @@ extension DeskModel {
         return enabled
     }
 
-    func environmentKeyFile(for agent: AgentID) -> String? {
-        guard let stored = keyFile(for: agent) else { return nil }
-        let expanded = AgentCommand.expandingTilde(stored, home: homeDirectory)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return expanded.isEmpty ? nil : expanded
-    }
-
     static func loadKeyFiles(from defaults: UserDefaults) -> [AgentID: String] {
         var files: [AgentID: String] = [:]
         for agent in AgentID.allCases {
@@ -309,9 +326,11 @@ extension DeskModel {
         return files
     }
 
-    private static func keyFileKey(_ agent: AgentID) -> String {
+    static func keyFileKey(_ agent: AgentID) -> String {
         "takibi.key.\(agent.rawValue)"
     }
+
+    private static let keysMovedKey = "takibi.keysInKeychain"
 
     static func loadOverrides(from defaults: UserDefaults) -> [AgentID: String] {
         var paths: [AgentID: String] = [:]

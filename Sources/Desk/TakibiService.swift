@@ -159,20 +159,16 @@ enum TakibiContext {
 }
 
 enum TakibiKey {
-    /// `$TAKIBI_KEY_FILE` when it is set, otherwise `~/.takibi/key`.
-    static func location(home: URL, environment: [String: String]) -> String {
-        if let override = nonempty(environment["TAKIBI_KEY_FILE"]) {
-            return AgentCommand.expandingTilde(override, home: home)
-        }
-        return TakibiPaths.keyFile(home: home)
-    }
-
     /// Writes a pasted API key as the one-line file the takibi CLI reads: folder 0700, file 0600.
     static func write(_ raw: String, to file: URL) throws {
         let trimmed = try validated(raw)
         let directory = file.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path(percentEncoded: false))
             try Data((trimmed + "\n").utf8).write(to: file, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path(percentEncoded: false))
@@ -192,12 +188,6 @@ enum TakibiKey {
             throw TakibiFailure("A Takibi key looks like publicId.secret.")
         }
         return trimmed
-    }
-
-    private static func nonempty(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -252,51 +242,104 @@ enum TakibiCard {
 @MainActor
 @Observable
 final class TakibiService {
+    static let mainKey = "main"
+
     private(set) var cliPath: URL?
     private(set) var projects: [TakibiProject] = []
     private(set) var projectsError: String?
     private(set) var skillInstalled: [AgentID: Bool] = [:]
     private(set) var isRefreshing = false
+    /// Which keys are saved: `mainKey` and agents' raw values. The keys themselves stay out of view state.
+    private(set) var savedKeys: Set<String> = []
+    private(set) var keysError: String?
+    /// `~/.takibi/key`, which the takibi CLI falls back to for any program that runs it.
+    private(set) var sharedKeyFileExists = false
 
-    var hasKeyFile: Bool {
-        fileExists(TakibiKey.location(home: home, environment: environment))
+    var hasKey: Bool {
+        savedKeys.contains(Self.mainKey)
     }
 
+    func hasOwnKey(_ agent: AgentID) -> Bool {
+        savedKeys.contains(agent.rawValue)
+    }
+
+    @ObservationIgnored private var keys: [String: String]?
+    @ObservationIgnored private var loading: Task<[String: String], Error>?
+    @ObservationIgnored private var writing: Task<Void, Error>?
     private let home: URL
-    private let environment: [String: String]
-    private let runner: @Sendable (URL, [String]) async throws -> TakibiCommandOutput
+    private let keyStore: any TakibiKeyStore
+    private let keyFolder: URL
+    private let runner: @Sendable (URL, [String], String?) async throws -> TakibiCommandOutput
     private let isExecutable: @Sendable (String) -> Bool
     private let fileExists: @Sendable (String) -> Bool
 
     init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
-        runner: @escaping @Sendable (URL, [String]) async throws -> TakibiCommandOutput = TakibiCLI.run,
+        keyStore: any TakibiKeyStore = KeychainKeyStore(),
+        keyFolder: URL = FileManager.default.temporaryDirectory,
+        runner: @escaping @Sendable (URL, [String], String?) async throws -> TakibiCommandOutput = TakibiCLI.run,
         isExecutable: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
-        fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) {
         self.home = home
-        self.environment = environment
+        self.keyStore = keyStore
+        self.keyFolder = keyFolder
         self.runner = runner
         self.isExecutable = isExecutable
         self.fileExists = fileExists
     }
 
-    /// Trims, requires `publicId.secret`, and writes it where the takibi CLI will read it:
-    /// `$TAKIBI_KEY_FILE` when set, else `~/.takibi/key` (`0600`, directory `0700`). Then refreshes.
-    func saveKey(_ key: String) throws {
-        try TakibiKey.write(key, to: URL(filePath: TakibiKey.location(home: home, environment: environment)))
-        Task { await refresh() }
-    }
-
-    /// Tests use this so a `DeskModel` never launches the real `takibi` binary.
+    /// Tests use this so a `DeskModel` never launches the real `takibi` binary or reads the Keychain.
     static func inactive(home: URL) -> TakibiService {
         TakibiService(
             home: home,
-            runner: { _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
+            keyStore: MemoryKeyStore(),
+            runner: { _, _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
             isExecutable: { _ in false },
             fileExists: { _ in false }
         )
+    }
+
+    /// Trims, requires `publicId.secret`, and saves it in the Keychain under `name`. Then refreshes.
+    func saveKey(_ raw: String, for name: String = mainKey) async throws {
+        let key = try TakibiKey.validated(raw)
+        try await update { $0[name] = key }
+        await refresh()
+    }
+
+    func removeKey(for name: String) async throws {
+        try await update { $0[name] = nil }
+    }
+
+    /// Adds keys found outside the Keychain. A key already saved under the same name wins.
+    func importKeys(_ found: [String: String]) async throws {
+        try await update { $0.merge(found) { saved, _ in saved } }
+    }
+
+    /// Writes the key one run uses: the agent's own, else the main key. With no agent, the main key,
+    /// else any agent's. Nil when there is none. The caller removes the file when the run ends.
+    func keyFile(for agent: AgentID?) async -> TakibiKeyFile? {
+        guard let keys = try? await loadedKeys() else { return nil }
+        let key = agent.flatMap { keys[$0.rawValue] }
+            ?? keys[Self.mainKey]
+            ?? (agent == nil ? AgentID.allCases.lazy.compactMap { keys[$0.rawValue] }.first : nil)
+        guard let key else { return nil }
+        do {
+            return try TakibiKeyFile.write(key, in: keyFolder)
+        } catch {
+            keysError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func deleteSharedKeyFile() throws {
+        do {
+            try FileManager.default.removeItem(atPath: TakibiPaths.keyFile(home: home))
+        } catch CocoaError.fileNoSuchFile {
+        } catch {
+            throw TakibiFailure("Couldn't delete ~/.takibi/key. \(error.localizedDescription)")
+        }
+        sharedKeyFileExists = false
     }
 
     func refresh() async {
@@ -313,7 +356,7 @@ final class TakibiService {
         var failure: String?
         for arguments in TakibiInstall.commands(missing: missing, home: home) {
             do {
-                let result = try await runner(executable, arguments)
+                let result = try await runner(executable, arguments, nil)
                 if result.exitCode != 0, failure == nil {
                     failure = TakibiStatus.failureText(
                         stdout: result.stdout,
@@ -333,12 +376,58 @@ final class TakibiService {
         }
     }
 
+    /// Reads the Keychain once; later calls, and calls made while it reads, share what it returned.
+    private func loadedKeys() async throws -> [String: String] {
+        if let keys {
+            return keys
+        }
+        if let loading {
+            return try await loading.value
+        }
+        let keyStore = keyStore
+        let task = Task.detached { try keyStore.load() }
+        loading = task
+        defer { loading = nil }
+        do {
+            let loaded = try await task.value
+            if keys == nil {
+                keys = loaded
+                savedKeys = Set(loaded.keys)
+            }
+            keysError = nil
+            return keys ?? loaded
+        } catch {
+            keysError = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// One change at a time, each starting from what the one before saved.
+    private func update(_ change: @escaping @MainActor (inout [String: String]) -> Void) async throws {
+        let previous = writing
+        let task = Task { @MainActor in
+            _ = await previous?.result
+            var updated = try await self.loadedKeys()
+            change(&updated)
+            guard updated != self.keys else { return }
+            let keyStore = self.keyStore
+            try await Task.detached { [updated] in try keyStore.save(updated) }.value
+            self.keys = updated
+            self.savedKeys = Set(updated.keys)
+            self.keysError = nil
+        }
+        writing = task
+        try await task.value
+    }
+
     private func reload() async {
         var installed: [AgentID: Bool] = [:]
         for agent in AgentID.allCases {
             installed[agent] = fileExists(TakibiPaths.skill(agent, home: home))
         }
         skillInstalled = installed
+        sharedKeyFileExists = fileExists(TakibiPaths.keyFile(home: home))
+        _ = try? await loadedKeys()
         cliPath = AgentCommand.resolve(candidates: TakibiPaths.candidates(home: home), isExecutable: isExecutable)
         guard let executable = cliPath else {
             projects = []
@@ -346,8 +435,10 @@ final class TakibiService {
             return
         }
 
+        let keyFile = await keyFile(for: nil)
+        defer { keyFile?.remove() }
         do {
-            let result = try await runner(executable, ["projects", "--json"])
+            let result = try await runner(executable, ["projects", "--json"], keyFile?.path)
             let parsed = TakibiStatus.projects(stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode)
             projects = parsed.projects
             projectsError = parsed.error
@@ -359,7 +450,7 @@ final class TakibiService {
 }
 
 enum TakibiCLI {
-    static func run(executable: URL, arguments: [String]) async throws -> TakibiCommandOutput {
+    static func run(executable: URL, arguments: [String], keyFile: String?) async throws -> TakibiCommandOutput {
         let workspace = FileManager.default.temporaryDirectory
             .appending(path: "desk-takibi-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: workspace) }
@@ -368,7 +459,7 @@ enum TakibiCLI {
             executable: executable,
             candidates: [],
             arguments: arguments,
-            environment: AgentCommand.environment(),
+            environment: AgentCommand.environment(keyFile: keyFile),
             workspace: workspace,
             notFound: "takibi was not found in ~/.local/bin, /opt/homebrew/bin, or /usr/local/bin.",
             succeedsOnCleanExit: true

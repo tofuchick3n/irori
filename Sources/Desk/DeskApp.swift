@@ -11,6 +11,7 @@ final class DeskAppDelegate: NSObject, NSApplicationDelegate {
     /// An agent left running would keep working with nobody to read its reply.
     func applicationWillTerminate(_: Notification) {
         AgentProcessGroups.shared.terminateAll()
+        TakibiKeyFile.removeAll()
     }
 }
 

@@ -126,92 +126,100 @@ import Testing
 }
 
 @MainActor
-@Test func saveKeyRejectsABadKeyAndWritesAPrivateFile() async throws {
+@Test func saveKeyRejectsABadKeyAndKeepsAGoodOneInTheKeyStore() async throws {
     let home = try makeSignInHome()
     defer { try? FileManager.default.removeItem(at: home) }
-    let directory = URL(filePath: TakibiPaths.keyDirectory(home: home), directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path(percentEncoded: false))
-
+    let store = MemoryKeyStore()
     let script = KeyScript()
     let cli = TakibiPaths.candidates(home: home)[0]
     let service = TakibiService(
         home: home,
-        runner: { _, arguments in script.run(arguments) },
-        isExecutable: { $0 == cli },
-        environment: [:]
+        keyStore: store,
+        keyFolder: home,
+        runner: { _, arguments, keyFile in
+            script.run(arguments, key: keyFile.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) })
+        },
+        isExecutable: { $0 == cli }
     )
-    #expect(service.hasKeyFile == false)
+    #expect(service.hasKey == false)
     #expect(try TakibiKey.validated("  pub.secret \n") == "pub.secret")
     for bad in ["nope", "  ", "pub.", ".secret", "pub.secret.extra", "pub.sec ret"] {
-        #expect(throws: TakibiFailure.self) { try service.saveKey(bad) }
+        await #expect(throws: TakibiFailure.self) { try await service.saveKey(bad) }
     }
-    #expect(FileManager.default.fileExists(atPath: TakibiPaths.keyFile(home: home)) == false)
+    #expect(try store.load().isEmpty)
     #expect(script.calls.isEmpty)
 
-    try service.saveKey("  pub.secret \n")
-    let keyPath = TakibiPaths.keyFile(home: home)
-    #expect(try String(contentsOf: URL(filePath: keyPath), encoding: .utf8) == "pub.secret\n")
-    #expect(try signInMode(at: keyPath) == 0o600)
-    #expect(try signInMode(at: directory.path(percentEncoded: false)) == 0o700)
-    #expect(service.hasKeyFile)
-
-    for _ in 0..<100 where script.calls.isEmpty || service.isRefreshing {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await service.saveKey("  pub.secret \n")
+    #expect(try store.load() == ["main": "pub.secret"])
+    #expect(service.hasKey)
+    #expect(FileManager.default.fileExists(atPath: TakibiPaths.keyFile(home: home)) == false)
+    // `takibi projects` got the key in a file that is gone once the command finished.
     #expect(script.calls.contains(["projects", "--json"]))
+    #expect(script.keys.last == "pub.secret\n")
+    let left = try FileManager.default.contentsOfDirectory(atPath: home.path(percentEncoded: false))
+    #expect(!left.contains { $0.hasPrefix(TakibiKeyFile.prefix) })
 }
 
 @MainActor
-@Test func hasKeyFileUsesTheEnvironmentOverride() throws {
+@Test func theSharedKeyFileCanBeDeleted() async throws {
     let home = try makeSignInHome()
     defer { try? FileManager.default.removeItem(at: home) }
-    #expect(TakibiKey.location(home: URL(filePath: "/Users/example"), environment: [:]) == "/Users/example/.takibi/key")
-    #expect(TakibiKey.location(home: URL(filePath: "/Users/example"), environment: ["TAKIBI_KEY_FILE": "~/keys/me"]) ==
-        "/Users/example/keys/me")
-    #expect(TakibiKey.location(home: URL(filePath: "/Users/example"), environment: ["TAKIBI_KEY_FILE": "  "]) ==
-        "/Users/example/.takibi/key")
-
-    let custom = home.appending(path: "custom.key")
-    try Data("x".utf8).write(to: custom)
-    let overridden = TakibiService(
-        home: home,
-        runner: { _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
-        isExecutable: { _ in false },
-        environment: ["TAKIBI_KEY_FILE": custom.path(percentEncoded: false)]
-    )
-    #expect(overridden.hasKeyFile)
-
-    let missingOverride = TakibiService(
-        home: home,
-        runner: { _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
-        isExecutable: { _ in false },
-        environment: ["TAKIBI_KEY_FILE": home.appending(path: "missing.key").path(percentEncoded: false)]
-    )
-    try FileManager.default.createDirectory(
-        at: URL(filePath: TakibiPaths.keyDirectory(home: home), directoryHint: .isDirectory),
-        withIntermediateDirectories: true
-    )
+    let directory = URL(filePath: TakibiPaths.keyDirectory(home: home), directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try Data("pub.secret\n".utf8).write(to: URL(filePath: TakibiPaths.keyFile(home: home)))
-    #expect(missingOverride.hasKeyFile == false)
-
-    let tilde = TakibiService(
+    let service = TakibiService(
         home: home,
-        runner: { _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
-        isExecutable: { _ in false },
-        environment: ["TAKIBI_KEY_FILE": "~/custom.key"]
+        keyStore: MemoryKeyStore(),
+        runner: { _, _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
+        isExecutable: { _ in false }
     )
-    #expect(tilde.hasKeyFile)
-
-    try TakibiService(
-        home: home,
-        runner: { _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
-        isExecutable: { _ in false },
-        environment: ["TAKIBI_KEY_FILE": custom.path(percentEncoded: false)]
-    ).saveKey("pub.secret")
-    // A pasted key goes where the takibi CLI reads it: the override, not ~/.takibi/key.
-    #expect(try String(contentsOf: custom, encoding: .utf8) == "pub.secret\n")
+    await service.refresh()
+    #expect(service.sharedKeyFileExists)
+    try service.deleteSharedKeyFile()
+    #expect(service.sharedKeyFileExists == false)
+    #expect(FileManager.default.fileExists(atPath: TakibiPaths.keyFile(home: home)) == false)
+    try service.deleteSharedKeyFile()
 }
+
+@Test func aKeyFileIsPrivateAndRemovable() throws {
+    let parent = try makeSignInHome()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let file = try TakibiKeyFile.write(" pub.secret\n", in: parent)
+    #expect(try String(contentsOfFile: file.path, encoding: .utf8) == "pub.secret\n")
+    #expect(try signInMode(at: file.path) == 0o600)
+    #expect(try signInMode(at: file.folder.path(percentEncoded: false)) == 0o700)
+    #expect(throws: TakibiFailure.self) { try TakibiKeyFile.write("nope", in: parent) }
+
+    // A crashed run's folder goes; one this running app made stays until its run ends.
+    let crashed = parent.appending(path: "\(TakibiKeyFile.prefix)999999-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: crashed, withIntermediateDirectories: true)
+    TakibiKeyFile.removeLeftovers(in: parent)
+    #expect(FileManager.default.fileExists(atPath: file.path))
+    #expect(!FileManager.default.fileExists(atPath: crashed.path(percentEncoded: false)))
+    file.remove()
+    #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path(percentEncoded: false)).isEmpty)
+}
+
+@MainActor
+@Test func overlappingKeyChangesKeepEveryKey() async throws {
+    let store = MemoryKeyStore(["codex": "pub.codex"])
+    let service = TakibiService(
+        home: URL(filePath: "/nonexistent"),
+        keyStore: store,
+        runner: { _, _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
+        isExecutable: { _ in false },
+        fileExists: { _ in false }
+    )
+    async let refresh: Void = service.refresh()
+    async let main: Void = service.saveKey("pub.main")
+    async let grok: Void = service.saveKey("pub.grok", for: "grok")
+    async let found: Void = service.importKeys(["claude": "pub.claude", "codex": "pub.old"])
+    _ = try await (refresh, main, grok, found)
+    let expected = ["main": "pub.main", "grok": "pub.grok", "claude": "pub.claude", "codex": "pub.codex"]
+    #expect(try store.load() == expected)
+    #expect(service.savedKeys == Set(expected.keys))
+}
+
 
 @MainActor
 @Test func refreshSignInChecksOnlyActiveAgents() async throws {
@@ -297,6 +305,7 @@ private func signInMode(at path: String) throws -> Int {
 private final class KeyScript: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [[String]] = []
+    private var storedKeys: [String?] = []
 
     var calls: [[String]] {
         lock.lock()
@@ -304,9 +313,16 @@ private final class KeyScript: @unchecked Sendable {
         return stored
     }
 
-    func run(_ arguments: [String]) -> TakibiCommandOutput {
+    var keys: [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedKeys
+    }
+
+    func run(_ arguments: [String], key: String?) -> TakibiCommandOutput {
         lock.lock()
         stored.append(arguments)
+        storedKeys.append(key)
         lock.unlock()
         return TakibiCommandOutput(stdout: #"{"projects":[]}"#, stderr: "", exitCode: 0)
     }
@@ -402,33 +418,87 @@ private final class SignInProbe: @unchecked Sendable {
 }
 
 @MainActor
-@Test func aPastedAgentKeyBecomesThatAgentsKeyFile() throws {
+@Test func aPastedAgentKeyGoesToTheKeyStore() async throws {
     let directory = FileManager.default.temporaryDirectory.appending(path: "desk-agentkey-\(UUID().uuidString)", directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: directory) }
     let suite = "desk-agentkey-\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
+    let store = MemoryKeyStore()
     let model = DeskModel(
         store: ThreadStore(directory: directory.appending(path: "threads", directoryHint: .isDirectory)),
         runner: EchoAgentRunner(),
         trash: { _ in },
         defaults: defaults,
-        supportDirectory: directory
+        supportDirectory: directory,
+        takibi: TakibiService(
+            home: directory,
+            keyStore: store,
+            runner: { _, _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
+            isExecutable: { _ in false },
+            fileExists: { _ in false }
+        )
     )
 
-    #expect(throws: TakibiFailure.self) { try model.saveAgentKey("not a key", for: .grok) }
-    #expect(model.keyFile(for: .grok) == nil)
+    await #expect(throws: TakibiFailure.self) { try await model.saveAgentKey("not a key", for: .grok) }
+    #expect(model.takibi.hasOwnKey(.grok) == false)
 
-    try model.saveAgentKey("  pub123.secret456\n", for: .grok)
-    let file = model.agentKeyURL(for: .grok)
-    #expect(model.keyFile(for: .grok) == file.path(percentEncoded: false))
-    #expect(try String(contentsOf: file, encoding: .utf8) == "pub123.secret456\n")
-    let attributes = try FileManager.default.attributesOfItem(atPath: file.path(percentEncoded: false))
-    #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    try await model.saveAgentKey("  pub123.secret456\n", for: .grok)
+    #expect(model.takibi.hasOwnKey(.grok))
+    #expect(try store.load() == ["grok": "pub123.secret456"])
 
-    model.removeAgentKey(for: .grok)
-    #expect(model.keyFile(for: .grok) == nil)
-    #expect(!FileManager.default.fileExists(atPath: file.path(percentEncoded: false)))
+    try await model.removeAgentKey(for: .grok)
+    #expect(model.takibi.hasOwnKey(.grok) == false)
+    #expect(try store.load().isEmpty)
+}
+
+@MainActor
+@Test func keyFilesFromEarlierVersionsMoveToTheKeyStoreOnce() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: "desk-keymove-\(UUID().uuidString)", directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let home = directory.appending(path: "home", directoryHint: .isDirectory)
+    let suite = "desk-keymove-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = MemoryKeyStore(["codex": "pub.saved"])
+    let model = DeskModel(
+        store: ThreadStore(directory: directory.appending(path: "threads", directoryHint: .isDirectory)),
+        runner: EchoAgentRunner(),
+        trash: { _ in },
+        defaults: defaults,
+        supportDirectory: directory,
+        homeDirectory: home,
+        takibi: TakibiService(
+            home: home,
+            keyStore: store,
+            runner: { _, _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
+            isExecutable: { _ in false }
+        )
+    )
+    let grok = model.legacyAgentKeyURL(for: .grok)
+    let codex = model.legacyAgentKeyURL(for: .codex)
+    let elsewhere = directory.appending(path: "mine.key", directoryHint: .notDirectory)
+    try TakibiKey.write("pub.grok", to: grok)
+    try TakibiKey.write("pub.codexfile", to: codex)
+    try TakibiKey.write("pub.claude", to: elsewhere)
+    try TakibiKey.write("pub.main", to: URL(filePath: TakibiPaths.keyFile(home: home)))
+    defaults.set(grok.path(percentEncoded: false), forKey: DeskModel.keyFileKey(.grok))
+    defaults.set(codex.path(percentEncoded: false), forKey: DeskModel.keyFileKey(.codex))
+    defaults.set(elsewhere.path(percentEncoded: false), forKey: DeskModel.keyFileKey(.claude))
+
+    await model.moveKeyFilesToKeychain()
+    #expect(try store.load() == ["main": "pub.main", "grok": "pub.grok", "codex": "pub.saved", "claude": "pub.claude"])
+    #expect(!FileManager.default.fileExists(atPath: grok.path(percentEncoded: false)))
+    #expect(!FileManager.default.fileExists(atPath: codex.path(percentEncoded: false)))
+    // ~/.takibi/key goes, since every program falls back to it. Of the agents' files, only irori's go.
+    #expect(!FileManager.default.fileExists(atPath: TakibiPaths.keyFile(home: home)))
+    #expect(model.takibi.sharedKeyFileExists == false)
+    #expect(FileManager.default.fileExists(atPath: elsewhere.path(percentEncoded: false)))
+    #expect(defaults.string(forKey: DeskModel.keyFileKey(.grok)) == nil)
+
+    try await model.takibi.removeKey(for: TakibiService.mainKey)
+    await model.moveKeyFilesToKeychain()
+    #expect(try store.load()["main"] == nil)
 }
 
 @Test func grokSaysNotLoggedInMeansSignedOut() {
@@ -436,20 +506,3 @@ private final class SignInProbe: @unchecked Sendable {
     #expect(SignInStatus.grok(from: "You are logged in with grok.com.\n") == .signedIn("grok.com"))
 }
 
-@MainActor
-@Test func aPastedMainKeyGoesWhereTakibiReadsIt() throws {
-    let home = FileManager.default.temporaryDirectory.appending(path: "desk-keypath-\(UUID().uuidString)", directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: home) }
-    let override = home.appending(path: "keys/prod.key", directoryHint: .notDirectory)
-    let service = TakibiService(
-        home: home,
-        runner: { _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
-        isExecutable: { _ in false },
-        fileExists: { FileManager.default.fileExists(atPath: $0) },
-        environment: ["TAKIBI_KEY_FILE": override.path(percentEncoded: false)]
-    )
-    try service.saveKey("pub.secret")
-    #expect(try String(contentsOf: override, encoding: .utf8) == "pub.secret\n")
-    #expect(!FileManager.default.fileExists(atPath: home.appending(path: ".takibi/key").path(percentEncoded: false)))
-    #expect(service.hasKeyFile)
-}

@@ -111,13 +111,12 @@ struct SnapshotTests {
             supportDirectory: ThreadStore.supportDirectory,
             assumeInstalled: false,
             accountPicture: { AccountPicture.load() },
-            takibi: TakibiService()
+            takibi: TakibiService(keyStore: MemoryKeyStore(["main": "pub.secret", "codex": "pub.codex"]))
         )
         await catalog.refresh()
         await model.takibi.refresh()
         await model.refreshSignIn()
         await model.refreshTools()
-        model.setKeyFile("/tmp/desk-snapshot-codex.key", for: .codex)
         let tabs: [(String, AnyView)] = [
             ("settings-general", AnyView(GeneralSettings(model: model))),
             ("settings-agents", AnyView(AgentsSettings(model: model))),
@@ -220,7 +219,9 @@ struct SnapshotTests {
             defaults: defaults,
             catalog: catalog,
             assumeInstalled: false,
-            takibi: TakibiService(),
+            takibi: TakibiService(keyStore: MemoryKeyStore(
+                Dictionary(uniqueKeysWithValues: AgentID.allCases.map { ($0.rawValue, "pub.\($0.rawValue)") })
+            )),
             signInProbe: { executable, _ in
                 switch executable.lastPathComponent {
                 case "claude": SignInOutput(stdout: #"{"loggedIn":true,"authMethod":"claude.ai"}"#, exitCode: 0, stderr: "")
@@ -232,9 +233,6 @@ struct SnapshotTests {
         await catalog.refresh()
         await model.takibi.refresh()
         await model.refreshSignIn()
-        for agent in AgentID.allCases {
-            model.setKeyFile(threads.appending(path: "\(agent.rawValue).key").path(percentEncoded: false), for: agent)
-        }
         let windows: [(String, AnyView, NSWindow.StyleMask)] = [
             // Only the Settings scene shows the tabs, so the pane goes in a window titled like it.
             ("settings", AnyView(TakibiSettings(model: model).frame(width: 520)), [.titled, .closable]),

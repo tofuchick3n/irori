@@ -134,7 +134,8 @@ import Testing
     let script = TakibiScript()
     let service = TakibiService(
         home: home,
-        runner: { executable, arguments in script.run(executable: executable, arguments: arguments) },
+        keyStore: MemoryKeyStore(),
+        runner: { executable, arguments, _ in script.run(executable: executable, arguments: arguments) },
         isExecutable: { _ in false }
     )
     await service.refresh()
@@ -298,10 +299,11 @@ import Testing
 }
 
 @MainActor
-@Test func eachAgentReceivesItsOwnExpandedKeyFile() async throws {
+@Test func eachAgentRunsWithItsOwnKeyOrTheMainOneInAFileDeletedAfterwards() async throws {
     let directory = try makeTakibiHome()
     defer { try? FileManager.default.removeItem(at: directory) }
-    let home = URL(filePath: "/Users/example")
+    let keyFolder = directory.appending(path: "keys", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: keyFolder, withIntermediateDirectories: true)
     let defaults = try takibiDefaults()
     defer { defaults.remove() }
     let runner = PromptRunner()
@@ -310,38 +312,50 @@ import Testing
         runner: runner,
         trash: { _ in },
         defaults: defaults.defaults,
-        homeDirectory: home,
-        takibi: .inactive(home: home)
+        takibi: TakibiService(
+            home: directory,
+            keyStore: MemoryKeyStore(["main": "pub.main", "grok": "pub.grok"]),
+            keyFolder: keyFolder,
+            runner: { _, _, _ in TakibiCommandOutput(stdout: "", stderr: "", exitCode: 1) },
+            isExecutable: { _ in false },
+            fileExists: { _ in false }
+        )
     )
-    model.setKeyFile("~/keys/claude", for: .claude)
-    model.setKeyFile("/keys/grok", for: .grok)
-    model.setKeyFile("  ", for: .codex)
-    model.setKeyFile("~/keys/muse", for: .muse)
-    #expect(defaults.defaults.string(forKey: "takibi.key.claude") == "~/keys/claude")
-    #expect(defaults.defaults.string(forKey: "takibi.key.codex") == nil)
-
-    let again = DeskModel(
-        store: ThreadStore(directory: directory),
-        runner: PromptRunner(),
-        trash: { _ in },
-        defaults: defaults.defaults,
-        homeDirectory: home,
-        takibi: .inactive(home: home)
-    )
-    #expect(again.keyFile(for: .claude) == "~/keys/claude")
-    #expect(again.keyFile(for: .grok) == "/keys/grok")
-    #expect(again.keyFile(for: .codex) == nil)
-    #expect(again.keyFile(for: .muse) == "~/keys/muse")
 
     model.newThread()
     model.draft = "@all hi"
     model.send()
     try await waitUntilTakibiIdle(model)
-    #expect(runner.call(for: .claude)?.keyFile == "/Users/example/keys/claude")
-    #expect(runner.call(for: .codex)?.keyFile == nil)
+    #expect(runner.call(for: .grok)?.key == "pub.grok\n")
+    for agent in [AgentID.claude, .codex, .muse] {
+        #expect(runner.call(for: agent)?.key == "pub.main\n")
+    }
+    let paths = Set(AgentID.allCases.compactMap { runner.call(for: $0)?.keyFile })
+    #expect(paths.count == AgentID.allCases.count)
+    #expect(paths.allSatisfy { $0.hasPrefix(keyFolder.path(percentEncoded: false)) })
+    #expect(try FileManager.default.contentsOfDirectory(atPath: keyFolder.path(percentEncoded: false)).isEmpty)
+}
+
+@MainActor
+@Test func withNoKeySavedAnAgentGetsNoKeyFile() async throws {
+    let directory = try makeTakibiHome()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let defaults = try takibiDefaults()
+    defer { defaults.remove() }
+    let runner = PromptRunner()
+    let model = DeskModel(
+        store: ThreadStore(directory: directory),
+        runner: runner,
+        trash: { _ in },
+        defaults: defaults.defaults,
+        takibi: .inactive(home: directory)
+    )
+    model.newThread()
+    model.draft = "@codex hi"
+    model.send()
+    try await waitUntilTakibiIdle(model)
     #expect(runner.call(for: .codex) != nil)
-    #expect(runner.call(for: .grok)?.keyFile == "/keys/grok")
-    #expect(runner.call(for: .muse)?.keyFile == "/Users/example/keys/muse")
+    #expect(runner.call(for: .codex)?.keyFile == nil)
 }
 
 @Test func eachAgentProcessReceivesItsTakibiKeyFile() async throws {
@@ -491,6 +505,8 @@ private final class PromptRunner: AgentRunner, @unchecked Sendable {
     struct Call: Equatable {
         var agent: AgentID
         var keyFile: String?
+        /// What the key file held while the agent ran.
+        var key: String?
     }
 
     private let lock = NSLock()
@@ -522,7 +538,8 @@ private final class PromptRunner: AgentRunner, @unchecked Sendable {
     ) -> AsyncThrowingStream<AgentEvent, Error> {
         lock.lock()
         storedPrompts.append(prompt)
-        calls.append(Call(agent: agent, keyFile: permissions.keyFile))
+        let key = permissions.keyFile.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+        calls.append(Call(agent: agent, keyFile: permissions.keyFile, key: key))
         lock.unlock()
         return AsyncThrowingStream { continuation in
             continuation.yield(.text("ok"))
@@ -612,7 +629,8 @@ private func takibiService(home: URL, script: TakibiScript) -> TakibiService {
     let cli = TakibiPaths.candidates(home: home)[0]
     return TakibiService(
         home: home,
-        runner: { executable, arguments in script.run(executable: executable, arguments: arguments) },
+        keyStore: MemoryKeyStore(),
+        runner: { executable, arguments, _ in script.run(executable: executable, arguments: arguments) },
         isExecutable: { $0 == cli }
     )
 }

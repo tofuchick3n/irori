@@ -101,6 +101,9 @@ extension DeskModel {
 
     private func run(_ agent: AgentID, in threadID: Thread.ID) async -> Bool {
         defer { activity = nil }
+        // Written for this run only, so the key never sits on disk for other programs to find.
+        let keyFile = await takibi.keyFile(for: agent)
+        defer { keyFile?.remove() }
         guard let threadIndex = index(of: threadID) else { return false }
         var prompt = agentPrompt(
             messages: threads[threadIndex].messages,
@@ -140,7 +143,7 @@ extension DeskModel {
                             permissions: AgentPermissions(
                                 allowsFileWrites: allowsFileWrites,
                                 allowedCommands: allowedCommands,
-                                keyFile: environmentKeyFile(for: agent),
+                                keyFile: keyFile?.path,
                                 allowedRules: alwaysAllowedTools + threads[threadIndex].allowedRules,
                                 images: images
                             ),

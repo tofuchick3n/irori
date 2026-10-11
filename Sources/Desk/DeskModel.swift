@@ -66,7 +66,6 @@ final class DeskModel {
     var probedInstallation = false
     var enabledSettings: [AgentID: Bool] = [:]
     var binaryOverrides: [AgentID: String] = [:]
-    var keyFiles: [AgentID: String] = [:]
     var knownTags: [String] = []
     var tagsError: String?
     var logoRevision = 0
@@ -284,7 +283,6 @@ final class DeskModel {
         hasSeenWelcome = defaults.bool(forKey: Self.welcomeKey)
         enabledSettings = Self.loadEnabled(from: defaults)
         binaryOverrides = Self.loadOverrides(from: defaults)
-        keyFiles = Self.loadKeyFiles(from: defaults)
         self.catalog = catalog
         self.takibi = takibi ?? .inactive(home: homeDirectory)
         let support = supportDirectory ?? store.directory.appending(path: ".desk", directoryHint: .isDirectory)
@@ -332,7 +330,11 @@ final class DeskModel {
         )
         notifier.onOpen = { [weak self] id in self?.openThread(id) }
         Task { await catalog.refresh() }
-        Task { await takibi.refresh() }
+        TakibiKeyFile.removeLeftovers()
+        Task {
+            await moveKeyFilesToKeychain()
+            await takibi.refresh()
+        }
         Task { await refreshSignIn() }
     }
 
