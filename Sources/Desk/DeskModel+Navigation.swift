@@ -56,7 +56,10 @@ extension DeskModel {
     static func notificationBody(_ thread: Thread, stopped: Bool) -> String {
         if stopped { return "Stopped" }
         guard let last = thread.messages.last else { return "" }
-        let text = last.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only the opening is shown, so a long reply needn't render whole.
+        let text = MarkdownRenderer.plainText(MarkdownRenderer.render(String(last.body.prefix(1_000))))
+            .replacingOccurrences(of: "\u{2028}", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.count > 100 ? String(text.prefix(100)) + "…" : text
     }
 }

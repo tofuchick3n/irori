@@ -188,6 +188,12 @@ private typealias DeskThread = Desk.Thread
         #expect(model.unreadThreads == [id])
     }
 
+    @Test func notificationBodyDropsMarkdownSyntax() {
+        var thread = DeskThread(title: "t")
+        thread.messages.append(Message(author: .agent(.claude), body: "Combined take:\n\n**Where we agree** on `code`  \nand more"))
+        #expect(DeskModel.notificationBody(thread, stopped: false) == "Combined take:\nWhere we agree on code\nand more")
+    }
+
     @Test func finishedRepliesDoNotReorderTheSidebar() async throws {
         let (model, directory) = try make()
         defer { try? FileManager.default.removeItem(at: directory) }
