@@ -58,7 +58,7 @@ struct TranscriptView: View {
             // thread can shift a little as they come into view.
             // A short thread fills the height with its messages at the bottom. Placed there by
             // offsetting the scroll instead, it brought the toolbar edge's line down to its top.
-            ReadingColumn(holdsWidth: holdsWidth, minHeight: max(visibleHeight - Self.topMargin, 0)) {
+            ReadingColumn(holdsWidth: holdsWidth, minHeight: max(visibleHeight - Self.topMargin, 0), widensToContent: false) {
                 LazyVStack(alignment: .leading, spacing: 26) {
                     ForEach(TranscriptRows.rows(in: thread.messages)) { row in
                         MessageRow(

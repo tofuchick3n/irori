@@ -5,6 +5,10 @@ import SwiftUI
 /// had and only moves, so replies aren't rewrapped and measured again on every frame of the slide.
 /// When the slide ends it takes its new width, rewrapping once. Content shorter than `minHeight`
 /// sits at the bottom of that height.
+///
+/// The transcript sets `widensToContent` off. Its lazy rows report only the widest row in view, so
+/// passing that up as the window's minimum changed it as replies streamed and scrolled, and AppKit's
+/// split view re-ran constraints until it threw.
 struct ReadingColumn: Layout {
     static let columnWidth: CGFloat = 720
 
@@ -12,6 +16,7 @@ struct ReadingColumn: Layout {
     var inset: CGFloat = 24
     var holdsWidth = false
     var minHeight: CGFloat = 0
+    var widensToContent = true
 
     struct Cache {
         var width: CGFloat?
@@ -32,7 +37,7 @@ struct ReadingColumn: Layout {
         let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)) }
         // At least as wide as the content allows, so the composer's minimum still reaches the
         // window's. A held width is no minimum: the column overflows until the slide ends.
-        let needed = holdsWidth ? 0 : (sizes.map(\.width).max() ?? 0) + inset * 2
+        let needed = holdsWidth || !widensToContent ? 0 : (sizes.map(\.width).max() ?? 0) + inset * 2
         let height = sizes.map(\.height).max() ?? 0
         cache.measured = (width, height)
         return CGSize(width: max(available, needed), height: max(height, minHeight))
