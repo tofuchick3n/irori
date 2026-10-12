@@ -1,8 +1,9 @@
 # Releasing
 
 1. Bump `APP_VERSION` and `BUILD_NUMBER` in `scripts/brand.env`.
-2. Have a notarytool keychain profile. This Mac's is `com.apple.gke.notary.tool.saved-creds.capkiku-notary`;
-   use it, don't ask. Any existing one for the team works (a profile is just stored
+2. Have a notarytool keychain profile. This Mac's is `capkiku-notary` (stored in the
+   Keychain as `com.apple.gke.notary.tool.saved-creds.capkiku-notary`; notarytool adds that prefix itself).
+   Use it, don't ask. Any existing one for the team works (a profile is just stored
    credentials, not tied to an app). To create one, run in Terminal (it asks for an app-specific password):
 
    ```sh
@@ -14,7 +15,7 @@
 3. Build, notarize, and write the update feed:
 
    ```sh
-   NOTARY_PROFILE=com.apple.gke.notary.tool.saved-creds.capkiku-notary scripts/make-dmg
+   NOTARY_PROFILE=capkiku-notary scripts/make-dmg
    ```
 
    This produces `build/release/irori-<version>.dmg` and `build/release/appcast.xml`.
