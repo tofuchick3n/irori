@@ -12,56 +12,75 @@ struct PreviewTarget: Codable, Hashable {
 
 /// A file rendered inside the app: markdown like the chat, HTML in a web view, PDFs, images,
 /// and text in monospace. Anything else gets a large icon and an Open button.
+/// Restarts the preview load when the file on disk may have changed.
+struct PreviewStamp: Equatable {
+    let url: URL
+    let modified: Date
+    let size: Int
+}
+
 struct FilePreview: View {
     let url: URL
     let folder: URL
+    let stamp: PreviewStamp
+    @State private var payload: PreviewPayload?
 
     init(file: ThreadFile, folder: URL) {
         self.url = file.url
         self.folder = folder
+        self.stamp = PreviewStamp(url: file.url, modified: file.modified, size: file.size)
     }
 
     init(url: URL, folder: URL) {
         self.url = url
         self.folder = folder
+        self.stamp = PreviewStamp(url: url, modified: .distantPast, size: 0)
     }
 
-    /// Bigger text files open in their own app; reading megabytes into a text view stalls.
-    private static let textLimit = 2_000_000
-
     var body: some View {
-        switch FileKind(url) {
-        case .markdown:
-            textPreview { DocumentText(text: MarkdownRenderer.render($0)) }
-        case .csv, .code, .text:
-            textPreview { DocumentText(text: Self.monospaced($0)) }
-        case .html:
-            WebPreview(url: url, folder: folder)
-        case .pdf:
-            PDFPreview(url: url)
-        case .image:
-            if let image = NSImage(contentsOf: url) {
-                ScrollView([.horizontal, .vertical]) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: image.size.width)
-                        .padding(16)
-                }
-            } else {
+        Group {
+            switch FileKind(url) {
+            case .markdown, .csv, .code, .text, .image:
+                loaded
+            case .html:
+                WebPreview(url: url, folder: folder)
+            case .pdf:
+                PDFPreview(url: url)
+            case .other:
                 fallback
             }
-        case .other:
-            fallback
+        }
+        // The read, the markdown render, and the image decode all happen there, not in body.
+        .task(id: stamp) {
+            guard FileKind(url).loadsInBackground else { return }
+            payload = nil
+            let url = url, kind = FileKind(url)
+            let scan = Task.detached { PreviewPayload.load(url: url, kind: kind) }
+            let fresh = await withTaskCancellationHandler(operation: { await scan.value }, onCancel: { scan.cancel() })
+            guard !Task.isCancelled else { return }
+            payload = fresh
         }
     }
 
-    @ViewBuilder private func textPreview(_ content: (String) -> some View) -> some View {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        if size <= Self.textLimit, let text = try? String(contentsOf: url, encoding: .utf8) {
-            content(text)
+    @ViewBuilder private var loaded: some View {
+        if let payload {
+            switch payload {
+            case .attributed(let text):
+                DocumentText(text: text.value)
+            case .image(let image):
+                ScrollView([.horizontal, .vertical]) {
+                    Image(nsImage: image.value)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: image.value.size.width)
+                        .padding(16)
+                }
+            case .unsupported:
+                fallback
+            }
         } else {
-            fallback
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -77,13 +96,6 @@ struct FilePreview: View {
         } actions: {
             Button("Open") { NSWorkspace.shared.open(url) }
         }
-    }
-
-    private static func monospaced(_ text: String) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize * 0.92, weight: .regular),
-            .foregroundColor: NSColor.labelColor,
-        ])
     }
 }
 

@@ -128,11 +128,12 @@ struct ContentView: View {
                 }
                 .inspector(isPresented: $model.showsFiles) {
                     FilesDrawer(
-                        thread: thread,
                         folder: model.workspaceURL(for: thread.id),
                         revision: thread.messages.count * 2 + (model.selectedThreadIsRunning ? 1 : 0),
+                        authors: ThreadFile.authors(in: thread.messages),
                         selection: $shownFile
                     )
+                    .equatable()
                     // A minimum below the ideal width opened the drawer narrow, then widened it a few
                     // frames later, so the transcript rewrapped twice.
                     .inspectorColumnWidth(min: Self.filesWidth, ideal: Self.filesWidth, max: 900)

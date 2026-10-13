@@ -105,7 +105,7 @@ struct ArchiveAndFilesTests {
         reply.files = ["out/report.html"]
         let thread = Desk.Thread(messages: [reply])
 
-        let files = ThreadFile.list(in: folder, thread: thread)
+        let files = try #require(ThreadFile.list(in: folder, authors: ThreadFile.authors(in: thread.messages)))
         #expect(files.map(\.path) == ["out/report.html", "old.md"])
         #expect(files.first?.agent == .grok)
         #expect(files.last?.agent == nil)

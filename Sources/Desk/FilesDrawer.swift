@@ -2,38 +2,62 @@ import AppKit
 import SwiftUI
 
 /// A file in a thread's folder, with the agent whose reply last created or changed it.
-struct ThreadFile: Identifiable, Equatable {
+struct ThreadFile: Identifiable, Equatable, Sendable {
     var id: String { path }
     var path: String
     var url: URL
     var size: Int
     var modified: Date
+    /// Formatted once at scan time, so rows don't reformat on every update.
+    var modifiedText: String
+    var sizeText: String
     var agent: AgentID?
 
+    /// Which agent's reply last touched each path; later replies win.
+    static func authors(in messages: [Message]) -> [String: AgentID] {
+        var authors: [String: AgentID] = [:]
+        for message in messages {
+            guard case .agent(let agent) = message.author else { continue }
+            for path in message.files {
+                authors[path] = agent
+            }
+        }
+        return authors
+    }
+
     /// Every file in the folder, newest first; dot-folders and app bundles' insides are skipped.
-    static func list(in folder: URL, thread: Thread) -> [ThreadFile] {
+    /// Nil when cancelled, so an older revision's walk never replaces a newer list.
+    static func list(in folder: URL, authors: [String: AgentID]) -> [ThreadFile]? {
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
-        var authors: [String: AgentID] = [:]
-        for message in thread.messages {
-            guard case .agent(let agent) = message.author else { continue }
-            for path in message.files {
-                authors[path] = agent
-            }
-        }
+        let base = folder.standardizedFileURL.path(percentEncoded: false)
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        let dates = RelativeDateTimeFormatter()
+        dates.dateTimeStyle = .named
+        dates.unitsStyle = .abbreviated
+        let bytes = ByteCountFormatter()
+        bytes.countStyle = .file
+        let now = Date.now
         var files: [ThreadFile] = []
         for case let url as URL in enumerator {
+            guard !Task.isCancelled else { return nil }
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
-            guard let relative = relativePath(of: url, in: folder) else { continue }
+            let full = url.standardizedFileURL.path(percentEncoded: false)
+            guard full.hasPrefix(prefix), full.count > prefix.count else { continue }
+            let relative = String(full.dropFirst(prefix.count))
+            let modified = values.contentModificationDate ?? .distantPast
+            let size = values.fileSize ?? 0
             files.append(ThreadFile(
                 path: relative,
                 url: url,
-                size: values.fileSize ?? 0,
-                modified: values.contentModificationDate ?? .distantPast,
+                size: size,
+                modified: modified,
+                modifiedText: modified == .distantPast ? "—" : dates.localizedString(for: modified, relativeTo: now),
+                sizeText: bytes.string(fromByteCount: Int64(size)),
                 agent: authors[relative]
             ))
         }
@@ -51,37 +75,56 @@ struct ThreadFile: Identifiable, Equatable {
     }
 }
 
+/// What the list scan is keyed on: a new folder or revision rescans.
+private struct ScanID: Equatable {
+    let folder: URL
+    let revision: Int
+}
+
 /// The thread's files beside the transcript: a list, and a full-height preview of the one picked.
-struct FilesDrawer: View {
-    let thread: Thread
+///
+/// Compared on its inputs, so text streaming into the transcript doesn't rebuild the list.
+struct FilesDrawer: View, Equatable {
+    nonisolated static func == (lhs: FilesDrawer, rhs: FilesDrawer) -> Bool {
+        lhs.folder == rhs.folder
+            && lhs.revision == rhs.revision
+            && lhs.authors == rhs.authors
+            && lhs._selection.wrappedValue == rhs._selection.wrappedValue
+    }
+
     let folder: URL
     /// Changes whenever a reply may have added files, so the list reloads.
     let revision: Int
+    /// Which agent's reply last created or changed each path.
+    let authors: [String: AgentID]
     @Binding var selection: String?
     @State private var files: [ThreadFile] = []
 
     var body: some View {
-        Group {
-            if let file = files.first(where: { $0.path == selection }) {
+        // Hoisted, so the list leaves the accessibility tree only while a preview covers it.
+        let previewed = files.first(where: { $0.path == selection })
+        return ZStack {
+            // Stays mounted under the preview, so going back keeps the rows and the scroll position.
+            list
+                .accessibilityHidden(previewed != nil)
+            if let file = previewed {
                 FilePreviewScreen(file: file, folder: folder) {
                     selection = nil
                 }
+                .background(Color(nsColor: .textBackgroundColor))
                 .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                list
-                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
         .animation(.snappy(duration: 0.22), value: selection)
         // Opaque like the transcript: documents read better on a solid page than on glass.
         .background(Color(nsColor: .textBackgroundColor))
         // Off the main thread: the drawer opens with this, and a scan there dropped its first frames.
-        .task(id: "\(thread.id)-\(revision)") {
-            let folder = folder, thread = thread
-            let fresh = await Task.detached { ThreadFile.list(in: folder, thread: thread) }.value
-            // The detached scan outlives this task's cancellation; without this, a slow scan
-            // for an older revision could finish last and leave a stale list behind.
-            guard !Task.isCancelled else { return }
+        // Cancelling the detached walk, so a newer revision stops an older one mid-enumeration.
+        .task(id: ScanID(folder: folder, revision: revision)) {
+            let folder = folder, authors = authors
+            let scan = Task.detached { ThreadFile.list(in: folder, authors: authors) }
+            let fresh = await withTaskCancellationHandler(operation: { await scan.value }, onCancel: { scan.cancel() })
+            guard !Task.isCancelled, let fresh else { return }
             files = fresh
         }
     }
@@ -114,28 +157,31 @@ struct FilesDrawer: View {
                 )
                 .frame(maxHeight: .infinity)
             } else {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(files) { file in
-                            FileRow(file: file) {
-                                selection = file.path
-                            }
-                            .contextMenu {
-                                Button("Open") { NSWorkspace.shared.open(file.url) }
-                                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }
-                            }
-                        }
+                List(files) { file in
+                    FileRow(file: file) {
+                        selection = file.path
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 12)
+                    .equatable()
+                    .contextMenu {
+                        Button("Open") { NSWorkspace.shared.open(file.url) }
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }
+                    }
+                    .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+                    .listRowSeparator(.hidden)
                 }
+                .listStyle(.plain)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
-private struct FileRow: View {
+/// Compared on the file, so a list update leaves untouched rows alone.
+private struct FileRow: View, Equatable {
+    nonisolated static func == (lhs: FileRow, rhs: FileRow) -> Bool {
+        lhs.file == rhs.file
+    }
+
     let file: ThreadFile
     let open: () -> Void
     @State private var hovering = false
@@ -175,9 +221,9 @@ private struct FileSubtitle: View {
                 Text(agent.displayName)
                 Text("·")
             }
-            Text(file.modified, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+            Text(file.modifiedText)
             Text("·")
-            Text(Int64(file.size), format: .byteCount(style: .file))
+            Text(file.sizeText)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -199,6 +245,14 @@ enum FileKind: Equatable {
         case "json", "yaml", "yml", "toml", "xml", "js", "ts", "py", "swift", "sh", "css", "sql": self = .code
         case "txt", "log", "": self = .text
         default: self = .other
+        }
+    }
+
+    /// Kinds whose content the preview loads in a background task; HTML and PDF views load their own.
+    var loadsInBackground: Bool {
+        switch self {
+        case .markdown, .csv, .code, .text, .image: true
+        case .html, .pdf, .other: false
         }
     }
 
