@@ -62,6 +62,35 @@ struct SidebarControlTests {
         #expect(!sidebar.isCollapsed)
     }
 
+    @Test func showingTheSidebarKeepsTheWindowWidth() async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appending(path: "desk-sidebar-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let control = SidebarControl()
+        let model = DeskModel(store: ThreadStore(directory: directory), trash: { _ in })
+        model.newThread()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.toolbar = NSToolbar()
+        window.contentViewController = NSHostingController(rootView: ContentView(model: model, sidebar: control))
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(800))
+        let split = try #require(Self.splitView(in: window.contentView!))
+        let sidebar = try #require((split.delegate as? NSSplitViewController)?.splitViewItems.first)
+        split.setPosition(340, ofDividerAt: 0)
+        control.toggle()
+        try await Task.sleep(for: .milliseconds(600))
+        window.setFrame(NSRect(x: 0, y: 0, width: 1000, height: 600), display: true)
+        try await Task.sleep(for: .milliseconds(300))
+        try #require(sidebar.isCollapsed && !control.isSliding && window.frame.width == 1000)
+
+        control.toggle()
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(!sidebar.isCollapsed)
+        #expect(window.frame.width == 1000, "1000 -> \(window.frame.width)")
+    }
+
     private static func splitView(in view: NSView) -> NSSplitView? {
         if let split = view as? NSSplitView { return split }
         for subview in view.subviews {

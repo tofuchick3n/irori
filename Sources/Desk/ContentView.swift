@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var shownFile: String?
     /// The drawer's state once its slide has finished; until then the reading column keeps its width.
     @State private var settledShowsFiles = false
+    /// How far the sidebar overlaps the detail column.
+    @State private var sidebarInset: CGFloat = 0
     /// Opens with the files drawer showing; for snapshots.
     var startsWithFiles = false
     var startsWithFile: String?
@@ -136,6 +138,8 @@ struct ContentView: View {
                     // frames later, so the transcript rewrapped twice.
                     .inspectorColumnWidth(min: Self.filesWidth, ideal: Self.filesWidth, max: 900)
                 }
+                .discountingSidebarInset(sidebarInset)
+                .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.leading } action: { sidebarInset = $0 }
                 .transaction(value: model.showsFiles) { $0.animation = Self.slide }
                 .onChange(of: model.showsFiles) {
                     if model.showsFiles { sidebar.makeRoom(for: Self.filesWidth) } else { sidebar.giveBackRoom() }
