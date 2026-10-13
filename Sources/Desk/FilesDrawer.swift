@@ -75,8 +75,14 @@ struct FilesDrawer: View {
         .animation(.snappy(duration: 0.22), value: selection)
         // Opaque like the transcript: documents read better on a solid page than on glass.
         .background(Color(nsColor: .textBackgroundColor))
+        // Off the main thread: the drawer opens with this, and a scan there dropped its first frames.
         .task(id: "\(thread.id)-\(revision)") {
-            files = ThreadFile.list(in: folder, thread: thread)
+            let folder = folder, thread = thread
+            let fresh = await Task.detached { ThreadFile.list(in: folder, thread: thread) }.value
+            // The detached scan outlives this task's cancellation; without this, a slow scan
+            // for an older revision could finish last and leave a stale list behind.
+            guard !Task.isCancelled else { return }
+            files = fresh
         }
     }
 

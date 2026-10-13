@@ -3,20 +3,19 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: DeskModel
-    var sidebar = SidebarControl()
+    @Bindable var sidebar = SidebarControl()
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @State private var savingToTakibi: Message?
     @State private var shownFile: String?
     /// The drawer's state once its slide has finished; until then the reading column keeps its width.
     @State private var settledShowsFiles = false
-    /// How far the sidebar overlaps the detail column.
-    @State private var sidebarInset: CGFloat = 0
     /// Opens with the files drawer showing; for snapshots.
     var startsWithFiles = false
     var startsWithFile: String?
     private static let filesWidth: CGFloat = 480
-    private static let slide = Animation.smooth(duration: 0.3)
+    private static let slideDuration = 0.3
+    private static let slide = Animation.smooth(duration: slideDuration)
 
     /// A panel is sliding in or out, so the transcript and composer keep their wrapping.
     private var holdsColumn: Bool {
@@ -24,7 +23,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $sidebar.visibility) {
             ThreadSidebar(model: model)
                 .background(SidebarControlAnchor(control: sidebar))
                 .toolbar(removing: .sidebarToggle)
@@ -138,15 +137,17 @@ struct ContentView: View {
                     // frames later, so the transcript rewrapped twice.
                     .inspectorColumnWidth(min: Self.filesWidth, ideal: Self.filesWidth, max: 900)
                 }
-                .discountingSidebarInset(sidebarInset)
-                .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.leading } action: { sidebarInset = $0 }
+                .discountingSidebarInset(sidebar.overlap)
                 .transaction(value: model.showsFiles) { $0.animation = Self.slide }
                 .onChange(of: model.showsFiles) {
+                    // A second toggle restarts the settle timer below; mark this slide unfinished
+                    // now, so the column holds its width even when toggling back to settled.
+                    settledShowsFiles = !model.showsFiles
                     if model.showsFiles { sidebar.makeRoom(for: Self.filesWidth) } else { sidebar.giveBackRoom() }
                 }
-                // Rewrap once the drawer has finished sliding.
+                // Rewrap once the drawer has finished sliding; rewrapping during its last frames dropped them.
                 .task(id: model.showsFiles) {
-                    try? await Task.sleep(for: .milliseconds(250))
+                    try? await Task.sleep(for: .seconds(Self.slideDuration + 0.05))
                     guard !Task.isCancelled else { return }
                     settledShowsFiles = model.showsFiles
                 }

@@ -91,6 +91,61 @@ struct SidebarControlTests {
         #expect(window.frame.width == 1000, "1000 -> \(window.frame.width)")
     }
 
+    @Test func hidingTheSidebarNearMinimumKeepsTheWindowWidth() async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appending(path: "desk-sidebar-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let control = SidebarControl()
+        let model = DeskModel(store: ThreadStore(directory: directory), trash: { _ in })
+        model.newThread()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.toolbar = NSToolbar()
+        window.contentViewController = NSHostingController(rootView: ContentView(model: model, sidebar: control))
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(800))
+        let split = try #require(Self.splitView(in: window.contentView!))
+        let sidebar = try #require((split.delegate as? NSSplitViewController)?.splitViewItems.first)
+        split.setPosition(340, ofDividerAt: 0)
+        try await Task.sleep(for: .milliseconds(400))
+        try #require(!sidebar.isCollapsed)
+        let start = window.minSize.width + 30
+        window.setFrame(NSRect(x: 0, y: 0, width: start, height: 600), display: true)
+        try await Task.sleep(for: .milliseconds(300))
+
+        control.toggle()
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(sidebar.isCollapsed)
+        #expect(window.frame.width == start, "\(start) -> \(window.frame.width)")
+    }
+
+    @Test func retogglingMidSlideSettlesOpenAndLocked() async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appending(path: "desk-sidebar-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let control = SidebarControl()
+        let model = DeskModel(store: ThreadStore(directory: directory), trash: { _ in })
+        model.newThread()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentViewController = NSHostingController(rootView: ContentView(model: model, sidebar: control))
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(800))
+        let sidebar = try #require((Self.splitView(in: window.contentView!)?.delegate as? NSSplitViewController)?.splitViewItems.first)
+
+        control.toggle()
+        try await Task.sleep(for: .milliseconds(100))
+        try #require(control.isSliding)
+        control.toggle()
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(!sidebar.isCollapsed)
+        #expect(!control.isSliding)
+        #expect(sidebar.canCollapse == false)
+        #expect(control.overlap == sidebar.viewController.view.frame.width)
+    }
+
     private static func splitView(in view: NSView) -> NSSplitView? {
         if let split = view as? NSSplitView { return split }
         for subview in view.subviews {
